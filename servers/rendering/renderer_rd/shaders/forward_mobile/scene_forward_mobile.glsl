@@ -1000,6 +1000,9 @@ layout(location = 1) out vec4 specular_buffer; //specular and SSS (subsurface sc
 #else
 
 layout(location = 0) out vec4 frag_color;
+#ifdef MODE_OIT_ACCUMULATE
+layout(location = 1) out float oit_extinction_out;
+#endif // MODE_OIT_ACCUMULATE
 #endif // MODE_MULTIPLE_RENDER_TARGETS
 
 #endif // RENDER DEPTH
@@ -2359,6 +2362,10 @@ void main() {
 
 #ifdef MODE_RENDER_DEPTH
 
+#ifdef MODE_OIT_SPLAT
+	oit_splat(gl_FragCoord.xy, uint(ViewIndex), -vertex.z, float(alpha));
+#endif // MODE_OIT_SPLAT
+
 #ifdef MODE_RENDER_MATERIAL
 
 	albedo_output_buffer.rgb = albedo;
@@ -2378,6 +2385,16 @@ void main() {
 #endif // MODE_RENDER_MATERIAL
 
 #else // MODE_RENDER_DEPTH
+
+	// The splat pass writes one sample per tile, at the tile centre. Look up exactly there: read the transmittance at the tile centre and give it this surface's depth at that point (this pixel's depth carried along the surface slope), so a sloped surface meets its own splat in the same slice and shades neither itself nor its neighbours.
+	vec2 oit_tile_uv = (floor(screen_uv * vec2(oit_params.froxel_dims.xy)) + 0.5) / vec2(oit_params.froxel_dims.xy);
+	vec2 oit_d_px = (oit_tile_uv - screen_uv) / vec2(dFdx(screen_uv.x), dFdy(screen_uv.y));
+	float oit_lookup_z = max(-vertex.z + dFdx(-vertex.z) * oit_d_px.x + dFdy(-vertex.z) * oit_d_px.y, 0.0001);
+#ifdef MODE_OIT_ACCUMULATE
+	float oit_front = oit_transmittance_in_front(oit_tile_uv, uint(ViewIndex), oit_lookup_z);
+#else
+	alpha = half(oit_apply(oit_tile_uv, uint(ViewIndex), oit_lookup_z, float(alpha)));
+#endif // MODE_OIT_ACCUMULATE
 
 	// multiply by albedo
 	diffuse_light *= albedo; // ambient must be multiplied by albedo at the end
@@ -2430,6 +2447,11 @@ void main() {
 	out_color.rgb *= premul_alpha;
 #endif
 
+#ifdef MODE_OIT_ACCUMULATE
+	// Weighted by the transmittance in front; the resolve pass divides the weights back out.
+	frag_color = vec4(vec3(out_color.rgb) * float(out_color.a) * oit_front, float(out_color.a) * oit_front);
+	oit_extinction_out = -log(1.0 - clamp(float(out_color.a), 0.0, 0.999));
+#else
 	frag_color = out_color;
 
 	if (sc_use_material_debanding()) {
@@ -2453,6 +2475,7 @@ void main() {
 		// to 10-bit quantization.
 		frag_color.rgb += (dither.rgb - 0.5) / 1023.0;
 	}
+#endif // MODE_OIT_ACCUMULATE
 
 #endif //MODE_MULTIPLE_RENDER_TARGETS
 

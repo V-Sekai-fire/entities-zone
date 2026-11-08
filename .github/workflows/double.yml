@@ -106,10 +106,20 @@ jobs:
             Linux) cp "$lib/libfdb_c.so" bin/ ;;
             Windows) cp "$(dirname "$lib")/../bin/fdb_c.dll" bin/ ;;
           esac
+      # Only the final binary and any sidecar libs just copied beside it --
+      # NOT bin/* (SCons leaves a full obj/ intermediate-object tree under
+      # bin/ too; uploading that collides when the release job flattens
+      # every platform's artifact into one directory, since object files
+      # share the same basename across editor/template_release and across
+      # platforms).
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.cache-name }}
-          path: bin/*
+          path: |
+            bin/${{ matrix.bin }}
+            bin/*.dll
+            bin/*.so
+            bin/*.dylib
           if-no-files-found: error
 
   linux:
@@ -175,10 +185,20 @@ jobs:
             Linux) cp "$lib/libfdb_c.so" bin/ ;;
             Windows) cp "$(dirname "$lib")/../bin/fdb_c.dll" bin/ ;;
           esac
+      # Only the final binary and any sidecar libs just copied beside it --
+      # NOT bin/* (SCons leaves a full obj/ intermediate-object tree under
+      # bin/ too; uploading that collides when the release job flattens
+      # every platform's artifact into one directory, since object files
+      # share the same basename across editor/template_release and across
+      # platforms).
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.cache-name }}
-          path: bin/*
+          path: |
+            bin/${{ matrix.bin }}
+            bin/*.dll
+            bin/*.so
+            bin/*.dylib
           if-no-files-found: error
 
   macos:
@@ -254,10 +274,20 @@ jobs:
             Linux) cp "$lib/libfdb_c.so" bin/ ;;
             Windows) cp "$(dirname "$lib")/../bin/fdb_c.dll" bin/ ;;
           esac
+      # Only the final binary and any sidecar libs just copied beside it --
+      # NOT bin/* (SCons leaves a full obj/ intermediate-object tree under
+      # bin/ too; uploading that collides when the release job flattens
+      # every platform's artifact into one directory, since object files
+      # share the same basename across editor/template_release and across
+      # platforms).
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.cache-name }}
-          path: bin/*
+          path: |
+            bin/${{ matrix.bin }}
+            bin/*.dll
+            bin/*.so
+            bin/*.dylib
           if-no-files-found: error
 
   release:

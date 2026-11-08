@@ -268,6 +268,8 @@
 /modules/websocket/**/SCsub                   @godotengine/network @godotengine/buildsystem
 /modules/websocket/doc_classes/               @godotengine/network @godotengine/documentation
 /modules/websocket/editor/                    @godotengine/network @godotengine/editor
+/modules/http3/                               @fire
+/lean/http3/                                  @fire
 
 ## Physics
 /modules/godot_physics_2d/                    @godotengine/physics
@@ -403,6 +405,7 @@
 /modules/tilemap/doc_classes/                 @godotengine/2d-nodes @godotengine/documentation
 /modules/tilemap/editor/                      @godotengine/2d-nodes @godotengine/editor
 /modules/tilemap/editor/**/SCsub              @godotengine/2d-nodes @godotengine/editor @godotengine/buildsystem
+/modules/open_telemetry/                      @V-Sekai/vsekai
 /modules/zip/                                 @godotengine/core
 /modules/zip/**/*.py                          @godotengine/core @godotengine/buildsystem
 /modules/zip/**/SCsub                         @godotengine/core @godotengine/buildsystem

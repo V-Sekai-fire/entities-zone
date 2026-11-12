@@ -101,6 +101,7 @@ if picoquic_present and picotls_present and env["platform"] != "web":
     env_thirdparty.disable_warnings()
     env_thirdparty.Append(
         CPPDEFINES=[
+            "MBEDTLS_PK_HAVE_ECC_KEYS",
             "PTLS_WITHOUT_OPENSSL",
             "PTLS_WITHOUT_FUSION",
             "PICOQUIC_WITH_MBEDTLS",
@@ -127,7 +128,7 @@ if picoquic_present and picotls_present and env["platform"] != "web":
     env.modules_sources += thirdparty_obj
 
     env_quic.Append(
-        CPPDEFINES=["GODOT_QUIC_NATIVE_BACKEND", "PTLS_WITHOUT_OPENSSL", "PTLS_WITHOUT_FUSION", "PICOQUIC_WITH_MBEDTLS"]
+        CPPDEFINES=["GODOT_QUIC_NATIVE_BACKEND", "PTLS_WITHOUT_OPENSSL", "PTLS_WITHOUT_FUSION", "PICOQUIC_WITH_MBEDTLS", "MBEDTLS_PK_HAVE_ECC_KEYS"]
     )
 
 elif env["platform"] == "web":

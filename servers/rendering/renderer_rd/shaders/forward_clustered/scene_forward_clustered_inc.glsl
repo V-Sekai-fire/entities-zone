@@ -523,6 +523,111 @@ layout(set = 1, binding = 38, std430) buffer restrict MaterialFeedbackBuffer {
 material_feedback;
 #endif
 
+layout(set = 1, binding = 39) uniform sampler3D oit_transmittance;
+
+layout(set = 1, binding = 40, std140) uniform OITParams {
+	vec4 slice_curve;
+	uvec4 froxel_dims;
+	// Depth intervals (near, far, linearization, first slice); range_info.x is how many, 1 or fewer means the single slice_curve.
+	vec4 ranges[8];
+	uvec4 range_info;
+}
+oit_params;
+
+layout(set = 1, binding = 41, std430) buffer restrict OITExtinction {
+	uint data[];
+}
+oit_extinction;
+
+float oit_slice_uv(float view_z) {
+	float near = oit_params.slice_curve.x;
+	float far = oit_params.slice_curve.y;
+	float k = max(oit_params.slice_curve.z, 0.001);
+	float linear_z = clamp((view_z - near) / max(far - near, 0.001), 0.0, 1.0);
+	return log(1.0 + k * linear_z) / log(1.0 + k);
+}
+
+float oit_slice_pos(float view_z) {
+	float slices = oit_params.slice_curve.w;
+	uint n = oit_params.range_info.x;
+	if (n <= 1u) {
+		return oit_slice_uv(view_z) * slices;
+	}
+	// Unrolled with constant indices: a dynamic index into the uniform array cost 30% of the frame on a scene of 60 full-screen layers.
+	vec4 r = oit_params.ranges[0];
+	float slice_end = oit_params.ranges[1].w;
+	if (n > 1u && view_z > r.y) {
+		r = oit_params.ranges[1];
+		slice_end = (n > 2u ? oit_params.ranges[2].w : slices);
+	}
+	if (n > 2u && view_z > r.y) {
+		r = oit_params.ranges[2];
+		slice_end = (n > 3u ? oit_params.ranges[3].w : slices);
+	}
+	if (n > 3u && view_z > r.y) {
+		r = oit_params.ranges[3];
+		slice_end = (n > 4u ? oit_params.ranges[4].w : slices);
+	}
+	if (n > 4u && view_z > r.y) {
+		r = oit_params.ranges[4];
+		slice_end = (n > 5u ? oit_params.ranges[5].w : slices);
+	}
+	if (n > 5u && view_z > r.y) {
+		r = oit_params.ranges[5];
+		slice_end = (n > 6u ? oit_params.ranges[6].w : slices);
+	}
+	if (n > 6u && view_z > r.y) {
+		r = oit_params.ranges[6];
+		slice_end = (n > 7u ? oit_params.ranges[7].w : slices);
+	}
+	if (n > 7u && view_z > r.y) {
+		r = oit_params.ranges[7];
+		slice_end = slices;
+	}
+	float k = max(r.z, 0.001);
+	float linear_z = clamp((view_z - r.x) / max(r.y - r.x, 0.001), 0.0, 1.0);
+	return r.w + log(1.0 + k * linear_z) / log(1.0 + k) * (slice_end - r.w);
+}
+
+uint oit_depth_to_slice(float view_z) {
+	float slices = oit_params.slice_curve.w;
+	return uint(clamp(oit_slice_pos(view_z), 0.0, slices - 1.0));
+}
+
+// Views pack side by side along X; froxel_dims.w is the view count and 0 means OIT is off.
+// Accumulates this fragment's extinction into the froxel that owns it; the framebuffer is at froxel resolution.
+void oit_splat(vec2 frag_coord, uint view, float view_z, float alpha) {
+	if (oit_params.froxel_dims.w == 0u || view_z <= 0.0 || alpha <= 0.0) {
+		return;
+	}
+	uvec3 froxel = uvec3(uvec2(frag_coord), oit_depth_to_slice(view_z));
+	froxel = min(froxel, oit_params.froxel_dims.xyz - uvec3(1u));
+	froxel.x += view * oit_params.froxel_dims.x;
+	uint index = (froxel.x * oit_params.froxel_dims.y + froxel.y) * oit_params.froxel_dims.z + froxel.z;
+	float ext = -log(1.0 - clamp(alpha, 0.0, 0.999));
+	atomicAdd(oit_extinction.data[index], uint(clamp(ext * 65536.0, 0.0, 4.29e9)));
+}
+
+// Transmittance through every slice in front of this fragment's own slice.
+float oit_transmittance_in_front(vec2 screen_uv, uint view, float view_z) {
+	if (oit_params.froxel_dims.w == 0u || view_z <= 0.0) {
+		return 1.0;
+	}
+	uint slice = oit_depth_to_slice(view_z);
+	if (slice == 0u) {
+		return 1.0;
+	}
+	float slice_uv = (float(slice) - 0.5) / oit_params.slice_curve.w;
+	// Clamped to the half-texel so bilinear filtering never reads the neighboring view's column.
+	float half_column = 0.5 / float(oit_params.froxel_dims.x);
+	float u = (clamp(screen_uv.x, half_column, 1.0 - half_column) + float(view)) / float(oit_params.froxel_dims.w);
+	return texture(oit_transmittance, vec3(u, screen_uv.y, slice_uv)).r;
+}
+
+float oit_apply(vec2 screen_uv, uint view, float view_z, float alpha) {
+	return alpha * oit_transmittance_in_front(screen_uv, view, view_z);
+}
+
 /* Set 2 Skeleton & Instancing (can change per item) */
 
 layout(set = 2, binding = 0, std430) restrict readonly buffer Transforms {

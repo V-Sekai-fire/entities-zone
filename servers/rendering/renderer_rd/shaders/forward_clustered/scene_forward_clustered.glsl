@@ -1029,6 +1029,9 @@ layout(location = 1) out vec4 specular_buffer; //specular and SSS (subsurface sc
 #else
 
 layout(location = 0) out vec4 frag_color;
+#ifdef MODE_OIT_ACCUMULATE
+layout(location = 1) out float oit_extinction_out;
+#endif
 #endif // MODE_SEPARATE_SPECULAR
 
 #endif // RENDER DEPTH
@@ -2996,6 +2999,10 @@ void fragment_shader(in SceneData scene_data) {
 
 #ifdef MODE_RENDER_DEPTH
 
+#ifdef MODE_OIT_SPLAT
+	oit_splat(gl_FragCoord.xy, uint(ViewIndex), -vertex.z, float(alpha));
+#endif
+
 #ifdef MODE_RENDER_SDF
 
 	{
@@ -3137,6 +3144,22 @@ void fragment_shader(in SceneData scene_data) {
 //nothing happens, so a tree-ssa optimizer will result in no fragment shader :)
 #else
 
+	// The splat pass writes one sample per tile, at the tile centre. Look up exactly there: read the transmittance at the tile centre and give it this surface's depth at that point (this pixel's depth carried along the surface slope), so a sloped surface meets its own splat in the same slice and shades neither itself nor its neighbours.
+	vec2 oit_tile_uv = (floor(screen_uv * vec2(oit_params.froxel_dims.xy)) + 0.5) / vec2(oit_params.froxel_dims.xy);
+	vec2 oit_d_px = (oit_tile_uv - screen_uv) / vec2(dFdx(screen_uv.x), dFdy(screen_uv.y));
+	// 1 / z is linear across a flat triangle, z is not: carry the inverse depth to the tile centre (exact for a plane), then step a hair toward the camera so rounding never lands the lookup in this surface's own slice (which would shade it by its own extinction).
+	float oit_inv_z = 1.0 / max(-vertex.z, 0.0001);
+	float oit_inv_c = oit_inv_z + dFdx(oit_inv_z) * oit_d_px.x + dFdy(oit_inv_z) * oit_d_px.y;
+	float oit_lookup_z = oit_inv_c > 0.0 ? 1.0 / oit_inv_c : -vertex.z;
+	oit_lookup_z = max(oit_lookup_z * (1.0 - 4.0e-5), 0.0001);
+#ifdef MODE_OIT_ACCUMULATE
+	float oit_front = oit_transmittance_in_front(oit_tile_uv, uint(ViewIndex), oit_lookup_z);
+	// The weights are stored in half floats: behind three opaque-alpha layers alpha * transmittance falls under the smallest half float, the sum reads 0 and the resolve writes black. A floor keeps them representable; the resolve divides a shared floor out, and a layer that deep adds under 0.1% either way.
+	oit_front = max(oit_front, 1.0e-3);
+#else
+	alpha = oit_apply(oit_tile_uv, uint(ViewIndex), oit_lookup_z, alpha);
+#endif // MODE_OIT_ACCUMULATE
+
 	// multiply by albedo
 	diffuse_light *= albedo; // ambient must be multiplied by albedo at the end
 
@@ -3191,6 +3214,12 @@ void fragment_shader(in SceneData scene_data) {
 #if defined(PREMUL_ALPHA_USED) && !defined(MODE_RENDER_DEPTH)
 	frag_color.rgb *= premul_alpha;
 #endif //PREMUL_ALPHA_USED
+
+#ifdef MODE_OIT_ACCUMULATE
+	// Weighted by the transmittance in front; the resolve pass divides the weights back out.
+	oit_extinction_out = -log(1.0 - clamp(frag_color.a, 0.0, 0.999));
+	frag_color = vec4(frag_color.rgb * frag_color.a * oit_front, frag_color.a * oit_front);
+#endif // MODE_OIT_ACCUMULATE
 
 #endif //MODE_SEPARATE_SPECULAR
 

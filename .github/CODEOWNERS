@@ -406,6 +406,7 @@
 /modules/zip/tests/                           @godotengine/core @godotengine/tests
 /modules/mcp/                                 @fire
 /modules/godot_mcp/                           @fire
+/modules/oit/                                 @fire
 
 # Platform
 

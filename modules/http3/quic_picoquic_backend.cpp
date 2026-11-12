@@ -1447,8 +1447,9 @@ static Error _wt_server_listen(WebTransportPeer *p_peer, int p_port, const Strin
 	}
 
 	// Install key (PEM; picoquic's ptls layer parses PEM natively).
+	// picotls only parses PEM when the last byte is NUL, so the length includes the terminator.
 	int key_ret = picoquic_set_tls_key(_wt_server->quic,
-			(const uint8_t *)key_pem, strlen(key_pem));
+			(const uint8_t *)key_pem, strlen(key_pem) + 1);
 	if (key_ret != 0) {
 		ERR_PRINT(vformat("WebTransportPeer: picoquic_set_tls_key failed: %d", key_ret));
 		picoquic_free(_wt_server->quic);

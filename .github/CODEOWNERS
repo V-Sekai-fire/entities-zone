@@ -266,6 +266,12 @@
 /modules/websocket/**/SCsub                   @godotengine/network @godotengine/buildsystem
 /modules/websocket/doc_classes/               @godotengine/network @godotengine/documentation
 /modules/websocket/editor/                    @godotengine/network @godotengine/editor
+/modules/http3/                               @fire
+/modules/http3/**/*.py                        @fire @godotengine/buildsystem
+/modules/http3/**/SCsub                       @fire @godotengine/buildsystem
+/modules/http3/doc_classes/                   @fire @godotengine/documentation
+/modules/http3/tests/                         @fire @godotengine/tests
+/lean/http3/                                  @fire
 
 ## Physics
 /modules/godot_physics_2d/                    @godotengine/physics
@@ -401,6 +407,7 @@
 /modules/tilemap/doc_classes/                 @godotengine/2d-nodes @godotengine/documentation
 /modules/tilemap/editor/                      @godotengine/2d-nodes @godotengine/editor
 /modules/tilemap/editor/**/SCsub              @godotengine/2d-nodes @godotengine/editor @godotengine/buildsystem
+/modules/open_telemetry/                      @V-Sekai/vsekai
 /modules/zip/                                 @godotengine/core
 /modules/zip/**/*.py                          @godotengine/core @godotengine/buildsystem
 /modules/zip/**/SCsub                         @godotengine/core @godotengine/buildsystem
@@ -566,3 +573,6 @@ SCsub                                         @godotengine/buildsystem
 
 /modules/native_media/                        @v-sekai-multiplayer-fabric/multiplayer-fabric
 /modules/native_media/doc_classes/            @v-sekai-multiplayer-fabric/multiplayer-fabric @godotengine/documentation
+/thirdparty/picoquic/certs/tests/              @godotengine/buildsystem @godotengine/tests
+/thirdparty/picoquic/doc/                     @godotengine/buildsystem @godotengine/documentation
+/thirdparty/picotls/deps/cifra/doc/           @godotengine/buildsystem @godotengine/documentation

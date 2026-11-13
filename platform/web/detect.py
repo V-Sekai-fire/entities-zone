@@ -80,7 +80,10 @@ def get_flags():
         "arch": "wasm32",
         "target": "template_debug",
         "builtin_pcre2_with_jit": False,
-        "rendering_device": False,
+        "vulkan": False,
+        "webgpu": True,
+        "webgpu_backend": "emdawnwebgpu",
+        "supported": ["webgpu"],
         # Embree is heavy and requires too much memory (GH-70621).
         "module_raycast_enabled": False,
         # Use -Os to prioritize optimizing for reduced file size. This is
@@ -251,6 +254,23 @@ def configure(env: "SConsEnvironment"):
         # See https://emscripten.org/docs/tools_reference/settings_reference.html#gl-enable-get-proc-address
         env.Append(LINKFLAGS=["-sGL_ENABLE_GET_PROC_ADDRESS=0"])
 
+    if env["webgpu"]:
+        env.AppendUnique(CPPDEFINES=["WEBGPU_ENABLED"])
+
+        # Debug things
+        env.Append(CCFLAGS=["-g"])
+
+        env.Append(CCFLAGS=["--use-port=emdawnwebgpu"])
+        env.Append(LINKFLAGS=["--use-port=emdawnwebgpu", "-sJSPI=1"])
+        backend = env["webgpu_backend"]
+        if backend == "auto":
+            backend = "emdawnwebgpu"
+        if backend == "emdawnwebgpu":
+            env.Append(CPPDEFINES=["WEBGPU_BACKEND_EMDAWN"])
+        else:
+            print_error('Unsupported "webgpu_backend={}" for platform "web"'.format(env["webgpu_backend"]))
+            sys.exit(255)
+
     if env["javascript_eval"]:
         env.Append(CPPDEFINES=["JAVASCRIPT_EVAL_ENABLED"])
 
@@ -334,7 +354,7 @@ def configure(env: "SConsEnvironment"):
         "HEAPF32",
         "HEAPF64",
     ]
-    env["EXPORTED_RUNTIME_METHODS"] += ["callMain", "cwrap"] + heap_arrays
+    env["EXPORTED_RUNTIME_METHODS"] += ["callMain", "cwrap", "wasmTable"] + heap_arrays
     env["EXPORTED_FUNCTIONS"] += ["_malloc", "_free"]
 
     # Add code that allow exiting runtime.

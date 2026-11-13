@@ -35,6 +35,7 @@
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "scene/main/scene_tree.h"
+#include "scene/resources/shader_template.h"
 #include "scene/resources/texture.h"
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/shader_language.h"
@@ -52,7 +53,19 @@ Shader::Mode Shader::get_mode() const {
 void Shader::_check_shader_rid() const {
 	MutexLock lock(shader_rid_mutex);
 	if (shader_rid.is_null() && !preprocessed_code.is_empty()) {
-		shader_rid = RenderingServer::get_singleton()->shader_create_from_code(preprocessed_code, get_path());
+		// set_code only resolves the shader template when the RID already exists, so a shader whose RID is created here, from
+		// its code (every shader loaded from a file, or created in a script before it is used), would be compiled with the
+		// built-in template. Resolve it first and set it before the code, as set_code does.
+		const String shader_template_path = ShaderLanguage::get_shader_template(preprocessed_code);
+		if (shader_template_path.is_empty()) {
+			shader_rid = RenderingServer::get_singleton()->shader_create_from_code(preprocessed_code, get_path());
+		} else {
+			shader_template = ResourceLoader::load(shader_template_path);
+			shader_rid = RenderingServer::get_singleton()->shader_create();
+			RenderingServer::get_singleton()->shader_set_path_hint(shader_rid, get_path());
+			RenderingServer::get_singleton()->shader_set_shader_template(shader_rid, shader_template.is_valid() ? shader_template->get_rid() : RID(), true);
+			RenderingServer::get_singleton()->shader_set_code(shader_rid, preprocessed_code);
+		}
 		preprocessed_code = String();
 	}
 }
@@ -127,6 +140,21 @@ void Shader::set_code(const String &p_code) {
 	}
 
 	if (shader_rid.is_valid()) {
+		Ref<ShaderTemplate> new_shader_template;
+
+		String shader_template_path = ShaderLanguage::get_shader_template(preprocessed_code);
+		if (!shader_template_path.is_empty()) {
+			new_shader_template = ResourceLoader::load(shader_template_path);
+		}
+		if (shader_template != new_shader_template) {
+			shader_template = new_shader_template;
+			if (shader_template.is_valid()) {
+				RenderingServer::get_singleton()->shader_set_shader_template(shader_rid, shader_template->get_rid(), true);
+			} else {
+				RenderingServer::get_singleton()->shader_set_shader_template(shader_rid, RID());
+			}
+		}
+
 		RenderingServer::get_singleton()->shader_set_code(shader_rid, preprocessed_code);
 		preprocessed_code = String();
 	}

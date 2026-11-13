@@ -576,3 +576,8 @@ SCsub                                         @godotengine/buildsystem
 /thirdparty/picoquic/certs/tests/              @godotengine/buildsystem @godotengine/tests
 /thirdparty/picoquic/doc/                     @godotengine/buildsystem @godotengine/documentation
 /thirdparty/picotls/deps/cifra/doc/           @godotengine/buildsystem @godotengine/documentation
+/modules/xr_grid/                             @v-sekai-multiplayer-fabric/multiplayer-fabric
+/modules/xr_grid/doc_classes/                 @v-sekai-multiplayer-fabric/multiplayer-fabric @godotengine/documentation
+/modules/cassie/                              @v-sekai-multiplayer-fabric/multiplayer-fabric
+/modules/cassie/doc_classes/                  @v-sekai-multiplayer-fabric/multiplayer-fabric @godotengine/documentation
+/modules/http3/                               @v-sekai-multiplayer-fabric/multiplayer-fabric

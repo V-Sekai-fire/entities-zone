@@ -1,0 +1,267 @@
+"""llm_vulkan_builders.py — SCons actions for compiling Vulkan shaders into the module.
+
+Mirrors what llama.cpp's CMakeLists.txt does via vulkan-shaders-gen + glslc,
+but as a Godot-style Python SCons action — no cmake, no ExternalProject.
+
+Steps:
+  1. Compile vulkan-shaders-gen.cpp → native host binary (once, cached).
+  2. Run it once per .comp file: glslc compiles GLSL → SPIR-V, gen writes
+     a per-shader .cpp and the shared ggml-vulkan-shaders.gen.hpp.
+  3. The generated .cpp files + ggml-vulkan.cpp are compiled into the module.
+"""
+
+from __future__ import annotations
+
+import glob
+import os
+import shutil
+import subprocess
+
+
+def _host_cxx():
+    """Return a usable host C++ compiler."""
+    # A MinGW build names its toolchain in MINGW_PREFIX; that compiler is not always on PATH.
+    prefix = os.environ.get("MINGW_PREFIX", "")
+    if prefix and os.name == "nt":  # a cross build from Linux needs a Linux generator
+        named = os.path.join(prefix, "bin", "x86_64-w64-mingw32-clang++" + (".exe" if os.name == "nt" else ""))
+        if os.path.exists(named):
+            return named
+    which_cmd = "where" if os.name == "nt" else "which"
+    # The MinGW-targeted clang first: a bare clang++ on a Windows runner is the system LLVM,
+    # which targets the MSVC STL and stops when that STL wants a newer clang than is installed.
+    for cxx in ("x86_64-w64-mingw32-clang++", "clang++", "g++", "c++", "cl"):
+        found = shutil.which(cxx)
+        if found is None:
+            continue
+        # A cross build from Linux has the MinGW compilers on PATH; they make a Windows
+        # generator, which the build cannot run. Take the next compiler instead.
+        if os.name != "nt" and (cxx.startswith("x86_64-w64") or (prefix and os.path.realpath(found).startswith(os.path.realpath(prefix)))):
+            continue
+        return cxx
+    raise RuntimeError("No host C++ compiler found for vulkan-shaders-gen")
+
+
+# The shader variants that glslc can compile, as upstream's CMakeLists.txt tests them:
+# (feature test shader, GLSL extension, define). The generator and ggml-vulkan.cpp must
+# both see the same defines, or the backend looks for shaders that were never generated.
+_GLSLC_FEATURES = (
+    ("coopmat", "GL_KHR_cooperative_matrix", "GGML_VULKAN_COOPMAT_GLSLC_SUPPORT"),
+    ("coopmat2", "GL_NV_cooperative_matrix2", "GGML_VULKAN_COOPMAT2_GLSLC_SUPPORT"),
+    ("coopmat2_decode_vector", "GL_NV_cooperative_matrix_decode_vector", "GGML_VULKAN_COOPMAT2_DECODE_VECTOR_GLSLC_SUPPORT"),
+    ("integer_dot", "GL_EXT_integer_dot_product", "GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT"),
+    ("bfloat16", "GL_EXT_bfloat16", "GGML_VULKAN_BFLOAT16_GLSLC_SUPPORT"),
+    ("float_e2m1", "GL_EXT_float_e2m1", "GGML_VULKAN_FLOAT_E2M1_GLSLC_SUPPORT"),
+    ("float_e4m3", "GL_EXT_float_e4m3", "GGML_VULKAN_FLOAT_E4M3_GLSLC_SUPPORT"),
+)
+
+
+def _glslc_feature_defines(shaders_dir: str, glslc: str) -> list[str]:
+    """Return the GGML_VULKAN_*_GLSLC_SUPPORT defines for the extensions this glslc accepts."""
+    defines = []
+    for test, extension, define in _GLSLC_FEATURES:
+        shader = os.path.join(shaders_dir, "feature-tests", test + ".comp")
+        if not os.path.exists(shader):
+            continue
+        result = subprocess.run(
+            [glslc, "-o", "-", "-fshader-stage=compute", "--target-env=vulkan1.3", shader],
+            capture_output=True,
+        )
+        if ("extension not supported: " + extension).encode() not in result.stderr:
+            defines.append(define)
+    return defines
+
+
+def _build_shaders_gen(shaders_dir: str, out_binary: str, defines: list[str]) -> None:
+    """Compile vulkan-shaders-gen from source if missing or stale."""
+    src = os.path.join(shaders_dir, "vulkan-shaders-gen.cpp")
+    if os.path.exists(out_binary):
+        if os.path.getmtime(out_binary) > os.path.getmtime(src):
+            return  # up to date
+    os.makedirs(os.path.dirname(out_binary), exist_ok=True)
+    cxx = _host_cxx()
+    cmd = [cxx, "-std=c++17", "-O2"] + ["-D" + d for d in defines] + [src, "-o", out_binary]
+    if os.path.basename(cxx) not in ("cl", "cl.exe"):
+        cmd.insert(1, "-pthread")  # the generator compiles shader variants on threads
+    if "mingw32" in cxx and os.name == "nt":
+        cmd.insert(1, "-static")  # the generator runs during the build, with no toolchain DLLs beside it
+    subprocess.check_call(cmd)
+
+
+def _glslc_path(env_glslc: str = "") -> str:
+    """Resolve glslc from GLSLC env var, VULKAN_SDK/bin, or PATH."""
+    if env_glslc:
+        return env_glslc
+    glslc_env = os.environ.get("GLSLC", "")
+    if glslc_env:
+        return glslc_env
+    sdk = os.environ.get("VULKAN_SDK", "")
+    if sdk:
+        # Windows SDK uses Bin\, Linux/macOS use bin/; .exe suffix on Windows.
+        for subdir in ("bin", "Bin"):
+            for exe in ("glslc", "glslc.exe"):
+                candidate = os.path.join(sdk, subdir, exe)
+                if os.path.exists(candidate):
+                    return candidate
+    # Fall back to PATH (works on Linux/macOS with shaderc installed)
+    which_cmd = ["where", "glslc"] if os.name == "nt" else ["which", "glslc"]
+    result = subprocess.run(which_cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        return result.stdout.strip().splitlines()[0]
+    raise RuntimeError(
+        "glslc not found. Options:\n"
+        "  export VULKAN_SDK=/path/to/VulkanSDK/x.y.z\n"
+        "  export GLSLC=/path/to/glslc\n"
+        "Install the Vulkan SDK: https://vulkan.lunarg.com/"
+    )
+
+
+def generate_vulkan_shaders(vk_src_dir: str, out_dir: str, hpp_path: str) -> list[str]:
+    """Compile all Vulkan .comp shaders and write ggml-vulkan-shaders.hpp.
+
+    Called directly from SCsub during the SCons reading phase so the header
+    exists before any C++ compilation starts. Uses mtime to skip if current.
+
+    Returns the GGML_VULKAN_*_GLSLC_SUPPORT defines the shaders were generated with.
+    The caller must compile ggml-vulkan.cpp with the same defines.
+    """
+    shaders_dir = os.path.join(vk_src_dir, "vulkan-shaders")
+    comp_files = sorted(glob.glob(os.path.join(shaders_dir, "*.comp")))
+
+    glslc = _glslc_path(os.environ.get("GLSLC", ""))
+    defines = _glslc_feature_defines(shaders_dir, glslc)
+
+    # Shaders generated with another set of defines are stale, whatever their age.
+    gen_binary = os.path.join(out_dir, "vulkan-shaders-gen")
+    stamp_path = os.path.join(out_dir, "glslc-features.txt")
+    stamp = "\n".join(defines) + "\n"
+    previous = None
+    if os.path.exists(stamp_path):
+        with open(stamp_path, encoding="utf-8") as f:
+            previous = f.read()
+    if previous != stamp:
+        for stale in (gen_binary, gen_binary + ".exe", hpp_path):
+            if os.path.exists(stale):
+                os.remove(stale)
+        for stale in glob.glob(os.path.join(out_dir, "*.comp.cpp")):
+            os.remove(stale)
+
+    # Skip if hpp is newer than all .comp sources AND all output .comp.cpp exist.
+    if os.path.exists(hpp_path):
+        expected_cpps = [os.path.join(out_dir, os.path.basename(c) + ".cpp") for c in comp_files]
+        if all(os.path.exists(p) for p in expected_cpps):
+            hpp_mtime = os.path.getmtime(hpp_path)
+            gen_src = os.path.join(shaders_dir, "vulkan-shaders-gen.cpp")
+            newest_src = max(os.path.getmtime(f) for f in comp_files + [gen_src])
+            if hpp_mtime > newest_src:
+                return defines
+
+    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(hpp_path), exist_ok=True)
+
+    # 1. Build vulkan-shaders-gen host binary
+    _build_shaders_gen(shaders_dir, gen_binary, defines)
+
+    # 2. Generate the HPP header skeleton first
+    subprocess.check_call([
+        gen_binary,
+        "--output-dir",
+        out_dir,
+        "--target-hpp",
+        hpp_path,
+    ])
+
+    # 3. Compile each .comp → SPIR-V → per-shader .cpp (also updates HPP)
+    for comp in comp_files:
+        name = os.path.basename(comp)
+        target_cpp = os.path.join(out_dir, name + ".cpp")
+        subprocess.check_call([
+            gen_binary,
+            "--glslc",
+            glslc,
+            "--source",
+            comp,
+            "--output-dir",
+            out_dir,
+            "--target-hpp",
+            hpp_path,
+            "--target-cpp",
+            target_cpp,
+        ])
+
+    with open(stamp_path, "w", encoding="utf-8") as f:
+        f.write(stamp)
+
+    print(f"llm_vulkan_builders: compiled {len(comp_files)} shaders -> {hpp_path}")
+    print("llm_vulkan_builders: glslc features: " + (", ".join(defines) or "none"))
+    return defines
+
+
+def get_generated_shader_cpps(spv_dir: str) -> list[str]:
+    """Return list of generated per-shader .cpp paths after generation."""
+    return sorted(glob.glob(os.path.join(spv_dir, "*.comp.cpp")))
+
+
+def generate_mingw_vulkan_implib(vulkan_headers_include: str, out_dir: str) -> str:
+    """Generate libvulkan-1.dll.a for MinGW cross-compile.
+
+    MinGW has no Vulkan import library in its sysroot. We extract the public
+    Vulkan function names from the SDK headers and use dlltool to create a
+    stub import library. vulkan-1.dll is guaranteed present on Windows 7+
+    with any modern GPU driver, so runtime linking always works.
+
+    Returns the path to the generated libvulkan-1.dll.a.
+    """
+    out_lib = os.path.join(out_dir, "libvulkan-1.dll.a")
+    out_def = os.path.join(out_dir, "vulkan-1.def")
+
+    # Skip if up to date
+    vk_core_h = os.path.join(vulkan_headers_include, "vulkan", "vulkan_core.h")
+    if (
+        os.path.exists(out_lib)
+        and os.path.exists(vk_core_h)
+        and os.path.getmtime(out_lib) > os.path.getmtime(vk_core_h)
+    ):
+        return out_lib
+
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Extract all vkXxx public API function names from vulkan_core.h
+    import re
+
+    functions = []
+    vk_headers_dir = os.path.join(vulkan_headers_include, "vulkan")
+    for header in sorted(glob.glob(os.path.join(vk_headers_dir, "vulkan*.h"))):
+        with open(header, encoding="utf-8", errors="ignore") as f:
+            src = f.read()
+        # Match: VKAPI_ATTR ... VKAPI_CALL vkFunctionName (
+        for m in re.finditer(r"VKAPI_CALL\s+(vk\w+)\s*\(", src):
+            fn = m.group(1)
+            if fn not in functions:
+                functions.append(fn)
+
+    with open(out_def, "w") as f:
+        f.write("LIBRARY vulkan-1\nEXPORTS\n")
+        for fn in functions:
+            f.write(f"    {fn}\n")
+
+    # Find the MinGW cross dlltool
+    dlltool = "x86_64-w64-mingw32-dlltool"
+    result = subprocess.run(["which", dlltool], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"{dlltool} not found. Install mingw-w64:\n"
+            "  brew install mingw-w64   (macOS)\n"
+            "  apt install mingw-w64    (Linux)"
+        )
+
+    subprocess.check_call([
+        dlltool,
+        "--dllname",
+        "vulkan-1.dll",
+        "--def",
+        out_def,
+        "--output-lib",
+        out_lib,
+    ])
+    print(f"llm_vulkan_builders: generated {out_lib} ({len(functions)} exports)")
+    return out_lib

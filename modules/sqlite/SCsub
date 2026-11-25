@@ -1,0 +1,103 @@
+#!/usr/bin/env python
+from misc.utility.scons_hints import *
+
+Import("env")
+
+env.Append(
+    CPPDEFINES=[
+        ("SQLITE_DEFAULT_SYNCHRONOUS", 1),
+        ("SQLITE_ENABLE_RBU", 1),
+        ("SQLITE_USE_URI", 1),
+        "SQLITE_ENABLE_JSON1",
+        "SQLITE_ENABLE_FTS3",
+        "SQLITE_ENABLE_FTS4",
+        "SQLITE_ENABLE_FTS5",
+        "SQLITE_ENABLE_RTREE",
+        "SQLITE_ENABLE_DBSTAT_VTAB",
+        "SQLITE_ENABLE_COLUMN_METADATA",
+        "SQLITE_ENABLE_MATH_FUNCTIONS",
+        ("SQLITE_DEFAULT_FOREIGN_KEYS", 1),
+        ("SQLITE_TEMP_STORE", 3),
+    ],
+)
+
+env.Append(CPPPATH=["#modules/sqlite/thirdparty", "#modules/sqlite"])
+
+# Pages live in FoundationDB. The weft_fdb VFS (thirdparty/datasource-store, a subtree of
+# V-Sekai-fire/datasource-store) is compiled in. The FoundationDB client is not linked: fdb/fdb_c.sigs
+# lists the entry points the VFS calls, thirdparty/generate_stubs/generate_stubs.py turns that into a
+# dlsym dispatch table, and fdb/fdb_client.cpp opens libfdb_c at run time. No foundationdb-clients
+# package, fdb_c.h or libfdb_c is needed to build, on any platform or architecture.
+#
+# The table is generated here, at SConscript-parse time, as modules/native_media does for GStreamer,
+# so it exists on disk before any object that includes it is scheduled (a Command races under -j).
+import os
+import subprocess
+import sys
+
+fdb_dir = env.Dir("fdb").srcnode().abspath
+fdb_sigs = os.path.join(fdb_dir, "fdb_c.sigs")
+fdb_stub_cc = os.path.join(fdb_dir, "fdb_c_stubs.cc")
+fdb_gen = env.File("#thirdparty/generate_stubs/generate_stubs.py").srcnode().abspath
+if not os.path.exists(fdb_stub_cc) or os.path.getmtime(fdb_sigs) > os.path.getmtime(fdb_stub_cc):
+    subprocess.run(
+        [
+            sys.executable,
+            fdb_gen,
+            "-o",
+            fdb_dir,
+            "-i",
+            fdb_dir,
+            "-t",
+            "posix_stubs",
+            "-s",
+            "fdb_c_stubs",
+            "-p",
+            "modules/sqlite/fdb",
+            "-l",
+            "(::std::cerr)",
+            "-n",
+            "iostream",
+            "--macro-include",
+            "modules/sqlite/fdb/fdb_stubgen_compat.h",
+            fdb_sigs,
+        ],
+        check=True,
+    )
+
+env.Append(CPPPATH=["#modules/sqlite/fdb"])
+if env["platform"] == "windows":
+    # MinGW has no <dlfcn.h>; the shim maps dlopen onto LoadLibrary for the generated stubs.
+    env.Append(CPPPATH=["#modules/sqlite/fdb/win_compat"], LIBS=["pthread"])
+if env["platform"] in ["linuxbsd", "android"]:
+    env.Append(LIBS=["dl"])
+
+env["builtin_zstd"] = False
+
+env_thirdparty = env.Clone()
+env_thirdparty.disable_warnings()
+
+module_sources = [
+    "src/*.cpp",
+    "src/*.c",
+    "*.cpp",
+]
+
+for source_file in module_sources:
+    env_thirdparty.add_source_files(env_thirdparty.modules_sources, source_file)
+
+env_thirdparty.add_source_files(env_thirdparty.modules_sources, "#modules/sqlite/thirdparty/sqlite/sqlite3.c")
+env_thirdparty.add_source_files(env_thirdparty.modules_sources, "#modules/sqlite/thirdparty/spmemvfs/spmemvfs.c")
+
+# fdb_vfs.c includes <sqlite3.h> and "fdb_keys.h", and needs the FoundationDB API version.
+env_thirdparty.Append(
+    CPPPATH=["#modules/sqlite/thirdparty/sqlite", "#modules/sqlite/thirdparty/datasource-store"],
+    CPPDEFINES=[("FDB_API_VERSION", 730), "WEFT_FDB_DLOPEN"],
+)
+env_thirdparty.add_source_files(
+    env_thirdparty.modules_sources, "#modules/sqlite/thirdparty/datasource-store/fdb_vfs.c"
+)
+env_thirdparty.add_source_files(env_thirdparty.modules_sources, "fdb/*.cc")
+env_thirdparty.add_source_files(env_thirdparty.modules_sources, "fdb/*.cpp")
+
+env.modules_sources += env_thirdparty.modules_sources
